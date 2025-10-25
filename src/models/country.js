@@ -1,18 +1,24 @@
-const mongoose = require("mongoose");
+module.exports = (sequelize, DataTypes) => {
+  const Country = sequelize.define(
+    "Country",
+    {
+      id: {
+        type: DataTypes.INTEGER,
+        autoIncrement: true,
+        primaryKey: true,
+      },
+      name: { type: DataTypes.STRING, allowNull: false, unique: true },
+      capital: { type: DataTypes.STRING, allowNull: true },
+      region: { type: DataTypes.STRING, allowNull: true },
+      population: { type: DataTypes.BIGINT, allowNull: false },
+      currency_code: { type: DataTypes.STRING, allowNull: true },
+      exchange_rate: { type: DataTypes.FLOAT, allowNull: true },
+      estimated_gdp: { type: DataTypes.DOUBLE, allowNull: true },
+      flag_url: { type: DataTypes.STRING, allowNull: true },
+      last_refreshed_at: { type: DataTypes.DATE, allowNull: true },
+    },
+    { timestamps: true }
+  );
 
-const CountrySchema = new mongoose.Schema(
-  {
-    name: { type: String, required: true, unique: true },
-    capital: { type: String, default: null },
-    region: { type: String, default: null },
-    population: { type: Number, required: true },
-    currency_code: { type: String, default: null },
-    exchange_rate: { type: Number, default: null },
-    estimated_gdp: { type: Number, default: null },
-    flag_url: { type: String, default: null },
-    last_refreshed_at: { type: Date, default: null },
-  },
-  { timestamps: true }
-);
-
-module.exports = mongoose.model("Country", CountrySchema);
+  return Country;
+};

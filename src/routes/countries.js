@@ -1,9 +1,11 @@
 const express = require("express");
 const router = express.Router();
 const axios = require("axios");
-const Country = require("../models/country");
-const Meta = require("../models/meta");
-// image generation removed: no longer generating summary image
+const { Country, Meta, sequelize } = require("../models");
+const { Op, fn, col, where } = require("sequelize");
+const path = require("path");
+const fs = require("fs");
+const generateSummaryImage = require("../utils/image");
 
 // Optional: seed route for local testing. Inserts a small sample set and returns count.
 router.post("/seed", async (req, res) => {
@@ -47,14 +49,25 @@ router.post("/seed", async (req, res) => {
             },
           ];
 
-    // clear and insert sample for deterministic local testing
-    await Country.deleteMany({});
-    const docs = await Country.insertMany(sample);
-    await Meta.findOneAndUpdate(
-      { key: "last_refreshed_at" },
-      { value: new Date() },
-      { upsert: true }
+    // clear and insert sample for deterministic local testing (Sequelize)
+    await Country.destroy({ where: {} });
+    const docs = await Country.bulkCreate(
+      sample.map((s) => ({
+        name: s.name,
+        capital: s.capital || null,
+        region: s.region || null,
+        population: s.population,
+        flag_url: s.flag || s.flag_url || null,
+        currency_code: s.currency_code || null,
+        exchange_rate: s.exchange_rate || null,
+        estimated_gdp: s.estimated_gdp || null,
+        last_refreshed_at: s.last_refreshed_at || new Date(),
+      }))
     );
+    await Meta.upsert({
+      key: "last_refreshed_at",
+      value: new Date().toISOString(),
+    });
     res.json({ inserted: docs.length });
   } catch (err) {
     console.error("/countries/seed error", err);
@@ -111,80 +124,113 @@ router.post("/refresh", async (req, res) => {
     const rates = ratesData.rates;
     const now = new Date();
 
-    // Prepare upsert operations
+    // Run upserts in a transaction so we don't partially update on unexpected errors
     const results = [];
     let skippedInvalid = 0;
-    for (const c of countriesData) {
-      const name = c.name;
-      if (!name || typeof c.population !== "number") {
-        // Skip invalid entries (per validation rules name & population required)
-        skippedInvalid++;
-        continue;
-      }
+    await sequelize.transaction(async (tx) => {
+      for (const c of countriesData) {
+        const name = c.name;
+        if (!name || typeof c.population !== "number") {
+          // Skip invalid entries (per validation rules name & population required)
+          skippedInvalid++;
+          continue;
+        }
 
-      let currency_code = null;
-      if (
-        Array.isArray(c.currencies) &&
-        c.currencies.length > 0 &&
-        c.currencies[0] &&
-        c.currencies[0].code
-      ) {
-        currency_code = c.currencies[0].code;
-      }
+        let currency_code = null;
+        if (
+          Array.isArray(c.currencies) &&
+          c.currencies.length > 0 &&
+          c.currencies[0] &&
+          c.currencies[0].code
+        ) {
+          currency_code = c.currencies[0].code;
+        }
 
-      let exchange_rate = null;
-      let estimated_gdp = null;
+        let exchange_rate = null;
+        let estimated_gdp = null;
 
-      if (!currency_code) {
-        exchange_rate = null;
-        estimated_gdp = 0;
-      } else if (!Object.prototype.hasOwnProperty.call(rates, currency_code)) {
-        exchange_rate = null;
-        estimated_gdp = null;
-      } else {
-        exchange_rate = rates[currency_code];
-        // random multiplier 1000-2000
-        const multiplier = Math.random() * 1000 + 1000;
-        // avoid division by zero
-        if (exchange_rate && exchange_rate !== 0) {
-          estimated_gdp = (c.population * multiplier) / exchange_rate;
-        } else {
+        if (!currency_code) {
+          exchange_rate = null;
+          estimated_gdp = 0;
+        } else if (
+          !Object.prototype.hasOwnProperty.call(rates, currency_code)
+        ) {
+          exchange_rate = null;
           estimated_gdp = null;
+        } else {
+          exchange_rate = rates[currency_code];
+          const multiplier = Math.random() * 1000 + 1000;
+          if (exchange_rate && exchange_rate !== 0) {
+            estimated_gdp = (c.population * multiplier) / exchange_rate;
+          } else {
+            estimated_gdp = null;
+          }
+        }
+
+        // Upsert by case-insensitive name
+        const existing = await Country.findOne({
+          where: where(fn("lower", col("name")), name.toLowerCase()),
+          transaction: tx,
+        });
+
+        if (existing) {
+          await existing.update(
+            {
+              name,
+              capital: c.capital || null,
+              region: c.region || null,
+              population: c.population,
+              currency_code,
+              exchange_rate,
+              estimated_gdp,
+              flag_url: c.flag || null,
+              last_refreshed_at: now,
+            },
+            { transaction: tx }
+          );
+          results.push(existing);
+        } else {
+          const created = await Country.create(
+            {
+              name,
+              capital: c.capital || null,
+              region: c.region || null,
+              population: c.population,
+              currency_code,
+              exchange_rate,
+              estimated_gdp,
+              flag_url: c.flag || null,
+              last_refreshed_at: now,
+            },
+            { transaction: tx }
+          );
+          results.push(created);
         }
       }
 
-      // Upsert by name (case-insensitive)
-      const query = { name: new RegExp("^" + escapeRegExp(name) + "$", "i") };
-      const update = {
-        name,
-        capital: c.capital || null,
-        region: c.region || null,
-        population: c.population,
-        currency_code,
-        exchange_rate,
-        estimated_gdp,
-        flag_url: c.flag || null,
-        last_refreshed_at: now,
-      };
+      // Update meta last_refreshed_at
+      await Meta.upsert(
+        { key: "last_refreshed_at", value: now.toISOString() },
+        { transaction: tx }
+      );
+    });
 
-      const options = { upsert: true, new: true, setDefaultsOnInsert: true };
-      const doc = await Country.findOneAndUpdate(query, update, options);
-      results.push(doc);
-    }
+    // After successful transaction, generate summary image and compute top5
+    const total = await Country.count();
+    const top5 = await Country.findAll({
+      where: { estimated_gdp: { [Op.ne]: null } },
+      order: [["estimated_gdp", "DESC"]],
+      limit: 5,
+    });
 
-    // Update meta last_refreshed_at
-    await Meta.findOneAndUpdate(
-      { key: "last_refreshed_at" },
-      { value: now },
-      { upsert: true }
-    );
-
-    // previously generated a summary image here; image generation removed
-    const total = await Country.countDocuments();
-    const top5 = await Country.find({ estimated_gdp: { $ne: null } })
-      .sort({ estimated_gdp: -1 })
-      .limit(5)
-      .lean();
+    // Ensure cache dir exists
+    const cacheDir = path.join(__dirname, "..", "cache");
+    if (!fs.existsSync(cacheDir)) fs.mkdirSync(cacheDir, { recursive: true });
+    await generateSummaryImage(path.join(cacheDir, "summary.png"), {
+      total,
+      top5: top5.map((t) => ({ name: t.name, estimated_gdp: t.estimated_gdp })),
+      last_refreshed_at: new Date().toISOString(),
+    });
 
     console.log(
       `[countries/refresh] fetched=${fetchedCount} skipped=${skippedInvalid} upserted=${results.length}`
@@ -193,17 +239,30 @@ router.post("/refresh", async (req, res) => {
       updated: results.length,
       fetched: fetchedCount,
       skipped: skippedInvalid,
-      last_refreshed_at: now.toISOString(),
+      last_refreshed_at: new Date().toISOString(),
     });
   } catch (err) {
-    console.error("Refresh failed", err.message || err);
-    // Distinguish external failures
-    if (err.isAxiosError) {
+    console.error("Refresh failed", err && err.message ? err.message : err);
+    // Distinguish external failures and try to indicate which API failed
+    let details = "Could not fetch data from external API";
+    if (err && err.config && err.config.url) {
+      const url = err.config.url;
+      if (url.includes("restcountries.com")) {
+        details = "Could not fetch data from restcountries API";
+      } else if (url.includes("open.er-api.com")) {
+        details = "Could not fetch data from exchange rates API";
+      }
+    } else if (err && err.isAxiosError) {
+      details = "Could not fetch data from external API";
+    }
+
+    if (err && (err.isAxiosError || (err.config && err.config.url))) {
       return res.status(503).json({
         error: "External data source unavailable",
-        details: "Could not fetch data from external API",
+        details,
       });
     }
+
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -216,13 +275,18 @@ router.get("/", async (req, res) => {
     if (region) filter.region = region;
     if (currency) filter.currency_code = currency;
 
-    let query = Country.find(filter).lean();
-    if (sort === "gdp_desc") query = query.sort({ estimated_gdp: -1 });
+    // Build Sequelize where clause
+    const whereClause = {};
+    if (filter.region) whereClause.region = filter.region;
+    if (filter.currency_code) whereClause.currency_code = filter.currency_code;
 
-    const list = await query.exec();
+    const findOptions = { where: whereClause, raw: true };
+    if (sort === "gdp_desc") findOptions.order = [["estimated_gdp", "DESC"]];
+
+    const list = await Country.findAll(findOptions);
     res.json(
       list.map((c) => ({
-        id: c._id,
+        id: c.id,
         name: c.name,
         capital: c.capital,
         region: c.region,
@@ -240,16 +304,29 @@ router.get("/", async (req, res) => {
   }
 });
 
+// DEBUG: return count and few sample docs to help diagnose empty results
+router.get("/debug", async (req, res) => {
+  try {
+    const total = await Country.count();
+    const sample = await Country.findAll({ limit: 5, raw: true });
+    return res.json({ total, sample });
+  } catch (err) {
+    console.error("/countries/debug error", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // GET /countries/:name
 router.get("/:name", async (req, res) => {
   try {
     const name = req.params.name;
     const country = await Country.findOne({
-      name: new RegExp("^" + escapeRegExp(name) + "$", "i"),
-    }).lean();
+      where: where(fn("lower", col("name")), name.toLowerCase()),
+      raw: true,
+    });
     if (!country) return res.status(404).json({ error: "Country not found" });
     res.json({
-      id: country._id,
+      id: country.id,
       name: country.name,
       capital: country.capital,
       region: country.region,
@@ -270,10 +347,10 @@ router.get("/:name", async (req, res) => {
 router.delete("/:name", async (req, res) => {
   try {
     const name = req.params.name;
-    const result = await Country.findOneAndDelete({
-      name: new RegExp("^" + escapeRegExp(name) + "$", "i"),
+    const deleted = await Country.destroy({
+      where: where(fn("lower", col("name")), name.toLowerCase()),
     });
-    if (!result) return res.status(404).json({ error: "Country not found" });
+    if (!deleted) return res.status(404).json({ error: "Country not found" });
     res.json({ success: true });
   } catch (err) {
     console.error(err);
@@ -281,16 +358,6 @@ router.delete("/:name", async (req, res) => {
   }
 });
 
-// DEBUG: return count and few sample docs to help diagnose empty results
-router.get("/debug", async (req, res) => {
-  try {
-    const total = await Country.countDocuments();
-    const sample = await Country.find({}).limit(5).lean();
-    return res.json({ total, sample });
-  } catch (err) {
-    console.error("/countries/debug error", err);
-    return res.status(500).json({ error: "Internal server error" });
-  }
-});
+// (debug route moved above dynamic name route to avoid routing collision)
 
 module.exports = router;

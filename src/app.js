@@ -29,11 +29,11 @@ app.get("/countries/image", (req, res) => {
 app.use("/countries", countriesRouter);
 
 // status endpoint
-const Meta = require("./models/meta");
+const { Country, Meta } = require("./models");
 app.get("/status", async (req, res) => {
   try {
-    const total = await require("./models/country").countDocuments();
-    const meta = await Meta.findOne({ key: "last_refreshed_at" });
+    const total = await Country.count();
+    const meta = await Meta.findOne({ where: { key: "last_refreshed_at" } });
     res.json({
       total_countries: total,
       last_refreshed_at: meta ? meta.value : null,

@@ -1,37 +1,31 @@
 const Jimp = require("jimp");
-const path = require("path");
-const fs = require("fs");
 
-async function generateSummaryImage(total, top5, timestamp) {
+/**
+ * Generates a simple PNG summary image containing total, top5 list, and timestamp.
+ * @param {string} outPath - path to write the PNG file
+ * @param {{total:number, top5: Array<{name:string,estimated_gdp:number}>, last_refreshed_at:string}} opts
+ */
+module.exports = async function generateSummaryImage(outPath, opts) {
   const width = 800;
   const height = 600;
-  const image = new Jimp(width, height, 0xffffffff);
+  const bgColor = 0xffffffff;
 
-  const fontTitle = await Jimp.loadFont(Jimp.FONT_SANS_32_BLACK);
-  const font = await Jimp.loadFont(Jimp.FONT_SANS_16_BLACK);
+  const image = new Jimp(width, height, bgColor);
+  const font = await Jimp.loadFont(Jimp.FONT_SANS_32_BLACK);
+  const small = await Jimp.loadFont(Jimp.FONT_SANS_16_BLACK);
 
-  image.print(fontTitle, 20, 20, `Countries Summary`);
-  image.print(font, 20, 70, `Total countries: ${total}`);
-  image.print(font, 20, 100, `Last refreshed: ${timestamp}`);
+  image.print(font, 24, 24, `Total countries: ${opts.total}`);
+  image.print(small, 24, 72, `Last refreshed: ${opts.last_refreshed_at}`);
 
-  image.print(font, 20, 140, `Top 5 by estimated GDP:`);
+  image.print(font, 24, 120, `Top 5 by estimated GDP:`);
   let y = 170;
-  top5.forEach((c, idx) => {
+  for (const t of opts.top5.slice(0, 5)) {
     const gdp =
-      c.estimated_gdp != null
-        ? Number(c.estimated_gdp).toLocaleString()
-        : "N/A";
-    image.print(font, 20, y, `${idx + 1}. ${c.name} — ${gdp}`);
-    y += 30;
-  });
+      t.estimated_gdp == null ? "N/A" : Number(t.estimated_gdp).toFixed(2);
+    image.print(small, 24, y, `${t.name} — ${gdp}`);
+    y += 28;
+  }
 
-  // place cache at the project root `cache/` so app and tests look in the same location
-  const cacheDir = path.join(__dirname, "..", "..", "cache");
-  if (!fs.existsSync(cacheDir)) fs.mkdirSync(cacheDir, { recursive: true });
-  const out = path.join(cacheDir, "summary.png");
-  console.log("[generateSummaryImage] writing summary image to:", out);
-  await image.writeAsync(out);
-  return out;
-}
-
-module.exports = { generateSummaryImage };
+  await image.writeAsync(outPath);
+};
+// (duplicate implementation removed) keep the top `generateSummaryImage(outPath, opts)` export

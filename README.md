@@ -26,9 +26,9 @@ Table of contents
 ## Prerequisites
 
 - Node.js (v16+ recommended) and npm
-- MongoDB accessible locally or remotely (the project uses Mongoose)
+- MySQL server if you plan to run against MySQL in non-test mode. Tests use sqlite in-memory.
 
-If you prefer a SQL database (MySQL) instead of MongoDB, the current code uses MongoDB; a migration is required to switch to MySQL.
+This project uses Sequelize for persistence and supports MySQL in normal runs. Tests run with sqlite in-memory when `NODE_ENV=test`.
 
 ## Quick start (local)
 
@@ -40,7 +40,7 @@ npm install
 
 2. Create an environment file
 
-create a `.env` and update values as needed. See the Environment variables section below.
+Create a `.env` and update values as needed. See the Environment variables section below.
 
 3. Start the server in development mode (restarts on file changes)
 
@@ -60,14 +60,24 @@ The API will be available at `http://localhost:3000` (or the port set in your `.
 
 Create a `.env` file in the project root. The project reads the following environment variables:
 
-- `MONGO_URI` — MongoDB connection string. Default: `mongodb://localhost:27017/countries_db`
+- `MYSQL_HOST` — MySQL host (default: `localhost`)
+- `MYSQL_PORT` — MySQL port (default: `3306`)
+- `MYSQL_DATABASE` — MySQL database name (default: `countries_db`)
+- `MYSQL_USER` — MySQL username (default: `root`)
+- `MYSQL_PASSWORD` — MySQL password (default: empty)
 - `PORT` — Port the server listens on. Default: `3000`
+- `NODE_ENV` — when set to `test` the app uses sqlite in-memory for fast tests
 
 Example `.env` (use `.env.example` as a starting point):
 
 ```
-MONGO_URI=mongodb://localhost:27017/countries_db
+MYSQL_HOST=localhost
+MYSQL_PORT=3306
+MYSQL_DATABASE=
+MYSQL_USER=root
+MYSQL_PASSWORD=
 PORT=3000
+NODE_ENV=development
 ```
 
 ## Scripts
@@ -189,10 +199,11 @@ The tests use an in-memory MongoDB server (mongodb-memory-server) so they won't 
 
 ## Notes & next steps
 
-- The implementation currently uses MongoDB (Mongoose). Your original spec mentioned MySQL — switching to MySQL requires migrating models and queries to an SQL library (e.g., `sequelize` or `knex`). If you want that, I can prepare a migration plan.
-- Image generation code exists at `src/utils/image.js`. If you want images regenerated on each refresh, I can re-enable the generation in the refresh flow.
+- The current implementation uses Sequelize and supports MySQL. Tests run against sqlite in-memory for isolation.
+- Image generation code exists at `src/utils/image.js` and is called during `POST /countries/refresh` to write `cache/summary.png`.
 
-If you want me to make any of the above changes (MySQL migration, auto image generation, stricter validation), tell me which and I'll implement it and run tests.
+If you'd like stricter validation behavior or additional CI workflows, tell me which and I'll implement them and run tests.
 
 ---
+
 # country-currency-exchange-API

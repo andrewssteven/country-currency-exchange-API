@@ -1,17 +1,14 @@
-const mongoose = require("mongoose");
 const app = require("./app");
+const { sequelize } = require("./models");
 
 const PORT = process.env.PORT || 3000;
 
 async function start() {
   try {
-    const mongoUri =
-      process.env.MONGO_URI || "mongodb://localhost:27017/countries_db";
-    await mongoose.connect(mongoUri, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-    });
-    console.log("Connected to MongoDB");
+    // Initialize DB. For tests we use sqlite in-memory via env NODE_ENV=test
+    await sequelize.authenticate();
+    await sequelize.sync();
+    console.log("Connected to SQL database");
     app.listen(PORT, () =>
       console.log(`Server listening on http://localhost:${PORT}`)
     );

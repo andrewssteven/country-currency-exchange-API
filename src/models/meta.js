@@ -1,8 +1,17 @@
-const mongoose = require("mongoose");
+module.exports = (sequelize, DataTypes) => {
+  const Meta = sequelize.define(
+    "Meta",
+    {
+      id: {
+        type: DataTypes.INTEGER,
+        autoIncrement: true,
+        primaryKey: true,
+      },
+      key: { type: DataTypes.STRING, allowNull: false, unique: true },
+      value: { type: DataTypes.TEXT, allowNull: true },
+    },
+    { timestamps: false }
+  );
 
-const MetaSchema = new mongoose.Schema({
-  key: { type: String, required: true, unique: true },
-  value: { type: mongoose.Schema.Types.Mixed },
-});
-
-module.exports = mongoose.model("Meta", MetaSchema);
+  return Meta;
+};
